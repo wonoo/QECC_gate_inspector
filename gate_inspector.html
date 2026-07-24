@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gate Inspector</title>
+<style>
+  :root {
+    --bg: #fafafa;
+    --panel: #ffffff;
+    --border: #d8d8d8;
+    --text: #222;
+    --muted: #777;
+    --accent: #0b66c3;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg); color: var(--text);
+    overscroll-behavior: none;
+  }
+  #toolbar {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 6px 10px; background: var(--panel); border-bottom: 1px solid var(--border);
+  }
+  #toolbar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 4px; }
+  button {
+    font: inherit; padding: 4px 10px; border: 1px solid var(--border); border-radius: 5px;
+    background: #fff; color: var(--text); cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: #f0f0f0; }
+  button:active { background: #e4e4e4; }
+  #scrub { display: flex; flex-direction: column; flex: 1 1 200px; min-width: 140px; gap: 2px; }
+  #tickSlider { width: 100%; margin: 0; accent-color: var(--accent); }
+  #mStrip { width: 100%; height: 9px; display: block; border-radius: 2px; cursor: pointer; }
+  #tickLabel { min-width: 110px; text-align: center; font-variant-numeric: tabular-nums; }
+  #pastePanel {
+    display: none; padding: 8px 10px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  #pastePanel.open { display: block; }
+  #pasteText {
+    width: 100%; height: 160px; font: 12px/1.4 ui-monospace, Menlo, monospace;
+    border: 1px solid var(--border); border-radius: 5px; padding: 6px; resize: vertical;
+  }
+  #pasteRow { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
+  #main { position: relative; flex: 1; min-height: 0; }
+  #canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #canvas.panning { cursor: grabbing; }
+  #status {
+    display: flex; gap: 14px; align-items: center;
+    padding: 4px 10px; background: var(--panel); border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden;
+  }
+  #status .warn { color: #b35c00; }
+  #status .err { color: #c0392b; }
+  #hint { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
+  #dropOverlay {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(11,102,195,.08); border: 3px dashed var(--accent); z-index: 10;
+    font-size: 20px; color: var(--accent); pointer-events: none;
+  }
+  #dropOverlay.show { display: flex; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <button id="btnOpen" title="Open a .stim file">Open…</button>
+  <button id="btnPaste" title="Paste circuit text">Paste</button>
+  <button id="btnExample" title="Load built-in example">Example</button>
+  <button id="btnFit" title="Fit circuit in view (F)">Fit</button>
+  <div class="sep"></div>
+  <button id="btnHome" title="First tick (Home)">|&#9664;</button>
+  <button id="btnPrevM" title="Previous measurement tick (&#8592;)">&#9664;M</button>
+  <button id="btnPrev" title="Previous tick (Q or ,)">&#9664;</button>
+  <span id="tickLabel">Tick 0 / 0</span>
+  <button id="btnNext" title="Next tick (E or .)">&#9654;</button>
+  <button id="btnNextM" title="Next measurement tick (&#8594;)">M&#9654;</button>
+  <button id="btnEnd" title="Last tick (End)">&#9654;|</button>
+  <div id="scrub">
+    <input id="tickSlider" type="range" min="0" max="0" value="0" step="1">
+    <canvas id="mStrip" title="Measurement ticks (click to jump)"></canvas>
+  </div>
+</div>
+
+<div id="pastePanel">
+  <textarea id="pasteText" spellcheck="false" placeholder="Paste a stim circuit here…"></textarea>
+  <div id="pasteRow">
+    <button id="btnLoadPasted">Load</button>
+    <button id="btnClosePaste">Close</button>
+    <span style="color:var(--muted)">Tip: you can also just press Cmd/Ctrl+V anywhere, or drag &amp; drop a .stim file.</span>
+  </div>
+</div>
+
+<div id="main">
+  <canvas id="canvas"></canvas>
+  <div id="dropOverlay">Drop .stim file to load</div>
+</div>
+
+<div id="status">
+  <span id="statCircuit"></span>
+  <span id="statLayer"></span>
+  <span id="statNote" class="warn"></span>
+  <span id="hint">drag: pan · wheel: zoom · &#8592;/&#8594;: jump to measurement · Q/E: step tick · Space+Q/E: skip empty ticks · Home/End · F: fit</span>
+</div>
+
+<input id="fileInput" type="file" accept=".stim,.txt" style="display:none">
+
+<script type="text/stim" id="exampleCircuit">
+QUBIT_COORDS(1, 1) 1
+QUBIT_COORDS(2, 0) 2
+QUBIT_COORDS(3, 1) 3
+QUBIT_COORDS(5, 1) 5
+QUBIT_COORDS(1, 3) 8
+QUBIT_COORDS(2, 2) 9
+QUBIT_COORDS(3, 3) 10
+QUBIT_COORDS(4, 2) 11
+QUBIT_COORDS(5, 3) 12
+QUBIT_COORDS(6, 2) 13
+QUBIT_COORDS(0, 4) 14
+QUBIT_COORDS(1, 5) 15
+QUBIT_COORDS(2, 4) 16
+QUBIT_COORDS(3, 5) 17
+QUBIT_COORDS(4, 4) 18
+QUBIT_COORDS(5, 5) 19
+QUBIT_COORDS(4, 6) 25
+R 1 3 5 8 10 12 15 17 19 2 9 11 13 14 16 18 25
+TICK
+H 2 11 16 25
+TICK
+CX 2 3 16 17 11 12 15 14 10 9 19 18
+TICK
+CX 2 1 16 15 11 10 8 14 3 9 12 18
+TICK
+CX 16 10 11 5 25 19 8 9 17 18 12 13
+TICK
+CX 16 8 11 3 25 17 1 9 10 18 5 13
+TICK
+H 2 11 16 25
+TICK
+MR 2 9 11 13 14 16 18 25
+DETECTOR(0, 4, 0) rec[-4]
+DETECTOR(2, 2, 0) rec[-7]
+DETECTOR(4, 4, 0) rec[-2]
+DETECTOR(6, 2, 0) rec[-5]
+REPEAT 2 {
+    TICK
+    H 2 11 16 25
+    TICK
+    CX 2 3 16 17 11 12 15 14 10 9 19 18
+    TICK
+    CX 2 1 16 15 11 10 8 14 3 9 12 18
+    TICK
+    CX 16 10 11 5 25 19 8 9 17 18 12 13
+    TICK
+    CX 16 8 11 3 25 17 1 9 10 18 5 13
+    TICK
+    H 2 11 16 25
+    TICK
+    MR 2 9 11 13 14 16 18 25
+    SHIFT_COORDS(0, 0, 1)
+    DETECTOR(2, 0, 0) rec[-8] rec[-16]
+    DETECTOR(2, 2, 0) rec[-7] rec[-15]
+    DETECTOR(4, 2, 0) rec[-6] rec[-14]
+    DETECTOR(6, 2, 0) rec[-5] rec[-13]
+    DETECTOR(0, 4, 0) rec[-4] rec[-12]
+    DETECTOR(2, 4, 0) rec[-3] rec[-11]
+    DETECTOR(4, 4, 0) rec[-2] rec[-10]
+    DETECTOR(4, 6, 0) rec[-1] rec[-9]
+}
+M 1 3 5 8 10 12 15 17 19
+DETECTOR(0, 4, 1) rec[-3] rec[-6] rec[-13]
+DETECTOR(2, 2, 1) rec[-5] rec[-6] rec[-8] rec[-9] rec[-16]
+DETECTOR(4, 4, 1) rec[-1] rec[-2] rec[-4] rec[-5] rec[-11]
+DETECTOR(6, 2, 1) rec[-4] rec[-7] rec[-14]
+OBSERVABLE_INCLUDE(0) rec[-7] rec[-8] rec[-9]
+</script>
+
+<script>
+'use strict';
+
+/* ============================= Gate catalog ============================= */
+
+const PALETTE = {
+  X:    { fill: '#ffb8b8', stroke: '#b02323', text: '#5a0e0e' },
+  Y:    { fill: '#b5e6b5', stroke: '#20811f', text: '#0d3d0c' },
+  Z:    { fill: '#b8d4ff', stroke: '#1f56b0', text: '#0c2a5a' },
+  H:    { fill: '#ffe066', stroke: '#b08b00', text: '#4d3c00' },
+  S:    { fill: '#dcc9ff', stroke: '#6b3fa0', text: '#341a52' },
+  GRAY: { fill: '#e4e4e4', stroke: '#666666', text: '#333333' },
+  MEAS: { fill: '#2b2b2b', stroke: '#000000', text: '#ffffff' },
+  UNK:  { fill: '#ffc2ec', stroke: '#a8177e', text: '#560b40' },
+};
+
+// Two-qubit endpoint symbols:
+//   {k:'dot'}                 filled control dot (Z control)
+//   {k:'oplus'}               circle-plus (X target/control)
+//   {k:'x'}                   swap cross
+//   {k:'box', label, pal}     labelled box
+const DOT = { k: 'dot' }, OPLUS = { k: 'oplus' }, XCROSS = { k: 'x' };
+const ybox  = { k: 'box', label: 'Y', pal: 'Y' };
+
+// kind: 'u' single-qubit box, 'p' paired 2-qubit, 'mpp' pauli-product measurement,
+//        'noise' hidden, 'anno' handled/ignored annotation
+const GATES = {};
+function defU(names, label, pal, extra) {
+  for (const n of names.split(' ')) GATES[n] = Object.assign({ name: n, kind: 'u', label, pal }, extra);
+}
+function defP(names, a, b, extra) {
+  for (const n of names.split(' ')) GATES[n] = Object.assign({ name: n, kind: 'p', a, b }, extra);
+}
+function defSkip(names, kind) {
+  for (const n of names.split(' ')) GATES[n] = { name: n, kind };
+}
+
+defU('I', 'I', 'GRAY');
+defU('X', 'X', 'X');  defU('Y', 'Y', 'Y');  defU('Z', 'Z', 'Z');
+defU('H', 'H', 'H');  defU('H_XY', 'Hxy', 'H');  defU('H_YZ', 'Hyz', 'H');
+defU('S', 'S', 'S');  defU('S_DAG', 'S†', 'S');
+defU('SQRT_X', '√X', 'X');  defU('SQRT_X_DAG', '√X†', 'X');
+defU('SQRT_Y', '√Y', 'Y');  defU('SQRT_Y_DAG', '√Y†', 'Y');
+defU('C_XYZ', 'C', 'S');  defU('C_ZYX', 'C†', 'S');
+defU('R', 'R', 'GRAY');  defU('RX', 'RX', 'GRAY');  defU('RY', 'RY', 'GRAY');
+defU('M',  'M',  'MEAS', { isM: true });
+defU('MX', 'MX', 'MEAS', { isM: true });
+defU('MY', 'MY', 'MEAS', { isM: true });
+defU('MR', 'MR', 'MEAS', { isM: true });
+defU('MRX', 'MRX', 'MEAS', { isM: true });
+defU('MRY', 'MRY', 'MEAS', { isM: true });
+
+defP('CX', DOT, OPLUS);
+defP('CY', DOT, ybox);
+defP('CZ', DOT, DOT);
+defP('XCX', OPLUS, OPLUS);
+defP('XCY', OPLUS, ybox);
+defP('XCZ', OPLUS, DOT);
+defP('YCX', ybox, OPLUS);
+defP('YCY', ybox, ybox);
+defP('YCZ', ybox, DOT);
+defP('SWAP', XCROSS, XCROSS);
+defP('ISWAP',     { k: 'box', label: 'iS',       pal: 'S' }, { k: 'box', label: 'iS',       pal: 'S' });
+defP('ISWAP_DAG', { k: 'box', label: 'iS†', pal: 'S' }, { k: 'box', label: 'iS†', pal: 'S' });
+defP('CXSWAP', { k: 'box', label: 'CX×', pal: 'S' }, { k: 'box', label: 'CX×', pal: 'S' });
+defP('SWAPCX', { k: 'box', label: '×CX', pal: 'S' }, { k: 'box', label: '×CX', pal: 'S' });
+defP('CZSWAP SWAPCZ', { k: 'box', label: 'CZ×', pal: 'S' }, { k: 'box', label: 'CZ×', pal: 'S' });
+for (const b of ['XX', 'YY', 'ZZ']) {
+  const pal = b[0];
+  defP(`SQRT_${b}`,     { k: 'box', label: `√${b}`,       pal }, { k: 'box', label: `√${b}`,       pal });
+  defP(`SQRT_${b}_DAG`, { k: 'box', label: `√${b}†`, pal }, { k: 'box', label: `√${b}†`, pal });
+  defP(`M${b}`, { k: 'box', label: `M${b}`, pal: 'MEAS' }, { k: 'box', label: `M${b}`, pal: 'MEAS' }, { isM: true });
+}
+GATES['MPP'] = { name: 'MPP', kind: 'mpp', isM: true };
+
+defSkip('X_ERROR Y_ERROR Z_ERROR I_ERROR II_ERROR DEPOLARIZE1 DEPOLARIZE2 ' +
+        'PAULI_CHANNEL_1 PAULI_CHANNEL_2 E CORRELATED_ERROR ELSE_CORRELATED_ERROR ' +
+        'HERALDED_ERASE HERALDED_PAULI_CHANNEL_1', 'noise');
+defSkip('DETECTOR OBSERVABLE_INCLUDE MPAD', 'anno');
+
+const ALIAS = {
+  CNOT: 'CX', ZCX: 'CX', ZCY: 'CY', ZCZ: 'CZ',
+  H_XZ: 'H', SQRT_Z: 'S', SQRT_Z_DAG: 'S_DAG',
+  MZ: 'M', RZ: 'R', MRZ: 'MR',
+};
+
+/* ============================= Parser ============================= */
+
+const MAX_TICKS = 500000;
+const MAX_OPS = 5000000;
+
+function parseTargetToken(tok) {
+  // one atom: "12", "!12", "X3", "!Y4", "rec[-2]", "sweep[5]"
+  let inv = false;
+  if (tok[0] === '!') { inv = true; tok = tok.slice(1); }
+  let m;
+  if ((m = tok.match(/^rec\[(-?\d+)\]$/)))   return { t: 'rec', v: +m[1] };
+  if ((m = tok.match(/^sweep\[(\d+)\]$/)))   return { t: 'sweep', v: +m[1] };
+  if ((m = tok.match(/^([XYZ])(\d+)$/i)))    return { t: 'q', q: +m[2], pauli: m[1].toUpperCase(), inv };
+  if ((m = tok.match(/^\d+$/)))              return { t: 'q', q: +tok, inv };
+  throw new Error(`bad target "${tok}"`);
+}
+
+function parseTargets(str) {
+  if (!str) return [];
+  const out = [];
+  // normalize combiners so "X1 * X2" and "X1*X2" both split cleanly
+  const toks = str.replace(/\s*\*\s*/g, '*').split(/\s+/).filter(Boolean);
+  for (const tok of toks) {
+    if (tok.includes('*')) {
+      out.push({ t: 'combo', terms: tok.split('*').map(parseTargetToken) });
+    } else {
+      out.push(parseTargetToken(tok));
+    }
+  }
+  return out;
+}
+
+function parseInstructions(text) {
+  // -> nested block structure: [{gate,args,targets,line} | {repeat,block}]
+  const root = [];
+  const stack = [root];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    const hash = line.indexOf('#');
+    if (hash >= 0) line = line.slice(0, hash);
+    line = line.trim();
+    if (!line) continue;
+    if (line === '}') {
+      if (stack.length === 1) throw new Error(`line ${i + 1}: unmatched "}"`);
+      stack.pop();
+      continue;
+    }
+    let m = line.match(/^REPEAT\s+(\d+)\s*\{?$/i);
+    if (m) {
+      const block = [];
+      stack[stack.length - 1].push({ repeat: +m[1], block });
+      stack.push(block);
+      continue;
+    }
+    m = line.match(/^([A-Za-z_][A-Za-z_0-9]*)\s*(?:\(([^)]*)\))?\s*(.*)$/);
+    if (!m) throw new Error(`line ${i + 1}: cannot parse "${line}"`);
+    let name = m[1].toUpperCase();
+    if (ALIAS[name]) name = ALIAS[name];
+    let targets;
+    try {
+      targets = parseTargets(m[3]);
+    } catch (e) {
+      throw new Error(`line ${i + 1}: ${e.message}`);
+    }
+    stack[stack.length - 1].push({ name, args: m[2] || '', targets, line: i + 1 });
+  }
+  if (stack.length !== 1) throw new Error('unclosed REPEAT block');
+  return root;
+}
+
+function buildCircuit(text) {
+  const root = parseInstructions(text);
+  const coords = new Map();       // qubit -> [x, y]
+  const usedQubits = new Set();
+  const shift = [0, 0];
+  let layers = [];
+  let cur = { ops: [], hasM: false };
+  let totalOps = 0, noiseOps = 0, truncated = false;
+
+  function noteTargets(targets) {
+    for (const t of targets) {
+      if (t.t === 'q') usedQubits.add(t.q);
+      else if (t.t === 'combo') for (const s of t.terms) if (s.t === 'q') usedQubits.add(s.q);
+    }
+  }
+
+  function emit(block) {
+    for (const inst of block) {
+      if (truncated) return;
+      if (inst.repeat !== undefined) {
+        for (let r = 0; r < inst.repeat && !truncated; r++) emit(inst.block);
+        continue;
+      }
+      const name = inst.name;
+      if (name === 'TICK') {
+        layers.push(cur);
+        cur = { ops: [], hasM: false };
+        if (layers.length >= MAX_TICKS) truncated = true;
+        continue;
+      }
+      if (name === 'QUBIT_COORDS') {
+        const nums = inst.args.split(',').map(Number);
+        for (const t of inst.targets) {
+          if (t.t === 'q') coords.set(t.q, [(nums[0] || 0) + shift[0], (nums[1] || 0) + shift[1]]);
+        }
+        noteTargets(inst.targets);
+        continue;
+      }
+      if (name === 'SHIFT_COORDS') {
+        const nums = inst.args.split(',').map(Number);
+        shift[0] += nums[0] || 0;
+        shift[1] += nums[1] || 0;
+        continue;
+      }
+      const g = GATES[name] || { name, kind: 'u', label: name, pal: 'UNK', unknown: true };
+      if (g.kind === 'noise') { noiseOps += inst.targets.length; continue; }
+      if (g.kind === 'anno') continue;
+      noteTargets(inst.targets);
+      cur.ops.push({ g, targets: inst.targets });
+      if (g.isM) cur.hasM = true;
+      totalOps += g.kind === 'p' ? Math.ceil(inst.targets.length / 2) : inst.targets.length;
+      if (totalOps >= MAX_OPS) truncated = true;
+    }
+  }
+  emit(root);
+  if (cur.ops.length || layers.length === 0) layers.push(cur);
+
+  // Position qubits that never got QUBIT_COORDS.
+  const qubits = [...usedQubits].sort((a, b) => a - b);
+  const missing = qubits.filter(q => !coords.has(q));
+  if (missing.length) {
+    let x0 = 0, y0 = 0, span = Math.max(1, Math.ceil(Math.sqrt(missing.length)));
+    if (coords.size) {
+      let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const [x, y] of coords.values()) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
+      x0 = minX; y0 = maxY + 2; span = Math.max(span, Math.round(maxX - minX) + 1);
+    }
+    missing.forEach((q, i) => coords.set(q, [x0 + (i % span), y0 + Math.floor(i / span)]));
+  }
+
+  // Typical nearest-neighbor spacing -> world-space "unit" for glyph sizing.
+  let unit = 1;
+  if (qubits.length >= 2) {
+    const pts = qubits.slice(0, 300).map(q => coords.get(q));
+    const dists = [];
+    for (let i = 0; i < pts.length; i++) {
+      let best = Infinity;
+      for (let j = 0; j < pts.length; j++) {
+        if (i === j) continue;
+        const dx = pts[i][0] - pts[j][0], dy = pts[i][1] - pts[j][1];
+        const d = dx * dx + dy * dy;
+        if (d > 1e-12 && d < best) best = d;
+      }
+      if (best < Infinity) dists.push(Math.sqrt(best));
+    }
+    dists.sort((a, b) => a - b);
+    if (dists.length) unit = dists[Math.floor(dists.length / 2)];
+  }
+
+  const mTicks = [];
+  layers.forEach((L, i) => { if (L.hasM) mTicks.push(i); });
+
+  return { layers, coords, qubits, unit, mTicks, totalOps, noiseOps, truncated };
+}
+
+/* ============================= State ============================= */
+
+let circuit = null;
+let tick = 0;
+const cam = { x: 0, y: 0, scale: 50 };  // scale: screen px per world unit
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const mStrip = document.getElementById('mStrip');
+const slider = document.getElementById('tickSlider');
+const tickLabel = document.getElementById('tickLabel');
+let dpr = 1;
+
+/* ============================= Rendering ============================= */
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1, Math.round(r.width * dpr));
+  canvas.height = Math.max(1, Math.round(r.height * dpr));
+  const rs = mStrip.getBoundingClientRect();
+  mStrip.width = Math.max(1, Math.round(rs.width * dpr));
+  mStrip.height = Math.round(9 * dpr);
+  drawStrip();
+  draw();
+}
+
+function fitView() {
+  if (!circuit || !circuit.qubits.length) return;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const q of circuit.qubits) {
+    const [x, y] = circuit.coords.get(q);
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const u = circuit.unit;
+  const w = canvas.width, h = canvas.height;
+  cam.x = (minX + maxX) / 2;
+  cam.y = (minY + maxY) / 2;
+  cam.scale = Math.min(w / (maxX - minX + 3 * u), h / (maxY - minY + 3 * u)) / dpr;
+  draw();
+}
+
+function roundedRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function drawBox(sx, sy, size, pal, label) {
+  const p = PALETTE[pal];
+  if (size < 4) {
+    ctx.fillStyle = p.stroke;
+    ctx.fillRect(sx - size / 2, sy - size / 2, Math.max(size, 1.5), Math.max(size, 1.5));
+    return;
+  }
+  roundedRect(sx - size / 2, sy - size / 2, size, size, size * 0.18);
+  ctx.fillStyle = p.fill;
+  ctx.fill();
+  ctx.strokeStyle = p.stroke;
+  ctx.lineWidth = Math.min(2, size * 0.08);
+  ctx.stroke();
+  if (size >= 12 && label) {
+    ctx.fillStyle = p.text;
+    const fs = Math.min(size * 0.55, (size * 1.5) / label.length);
+    ctx.font = `bold ${fs}px -apple-system, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, sx, sy + fs * 0.05);
+  }
+}
+
+function drawEnd(end, sx, sy, u) {
+  switch (end.k) {
+    case 'dot': {
+      ctx.beginPath();
+      ctx.arc(sx, sy, Math.max(2, u * 0.13), 0, 6.2832);
+      ctx.fillStyle = '#222';
+      ctx.fill();
+      break;
+    }
+    case 'oplus': {
+      const r = Math.max(3, u * 0.18);
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, 6.2832);
+      ctx.fillStyle = '#fff';
+      ctx.fill();
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = Math.max(1, u * 0.045);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(sx - r, sy); ctx.lineTo(sx + r, sy);
+      ctx.moveTo(sx, sy - r); ctx.lineTo(sx, sy + r);
+      ctx.stroke();
+      break;
+    }
+    case 'x': {
+      const r = Math.max(3, u * 0.16);
+      ctx.beginPath();
+      ctx.moveTo(sx - r, sy - r); ctx.lineTo(sx + r, sy + r);
+      ctx.moveTo(sx - r, sy + r); ctx.lineTo(sx + r, sy - r);
+      ctx.strokeStyle = '#222';
+      ctx.lineWidth = Math.max(1.2, u * 0.055);
+      ctx.stroke();
+      break;
+    }
+    case 'box':
+      drawBox(sx, sy, u * 0.52, end.pal, end.label);
+      break;
+  }
+}
+
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#fafafa';
+  ctx.fillRect(0, 0, w, h);
+  if (!circuit) return;
+
+  const s = cam.scale * dpr;
+  const ox = w / 2 - cam.x * s;
+  const oy = h / 2 - cam.y * s;
+  const sxOf = x => x * s + ox;
+  const syOf = y => y * s + oy;
+  const u = circuit.unit * s;          // px per nearest-neighbor spacing
+  const pad = u;                       // culling margin
+  const inView = (sx, sy) => sx > -pad && sx < w + pad && sy > -pad && sy < h + pad;
+
+  drawGrid(s, ox, oy);
+
+  // qubits: blank boxes, same footprint as gate boxes (gates paint over them)
+  const qSize = u * 0.62;
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#8a8a8a';
+  ctx.lineWidth = Math.max(1, Math.min(2 * dpr, qSize * 0.06));
+  for (const q of circuit.qubits) {
+    const [x, y] = circuit.coords.get(q);
+    const sx = sxOf(x), sy = syOf(y);
+    if (!inView(sx, sy)) continue;
+    if (qSize < 4) {
+      ctx.fillStyle = '#8a8a8a';
+      ctx.fillRect(sx - qSize / 2, sy - qSize / 2, Math.max(qSize, 1.5), Math.max(qSize, 1.5));
+      ctx.fillStyle = '#ffffff';
+    } else {
+      roundedRect(sx - qSize / 2, sy - qSize / 2, qSize, qSize, qSize * 0.18);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
+  const L = circuit.layers[tick];
+  if (!L) { drawAxes(s, ox, oy); return; }
+  const boxSize = u * 0.62;
+  const lineW = Math.min(3 * dpr, Math.max(1, u * 0.045));
+
+  const posOf = t => {
+    if (t.t !== 'q') return null;
+    const c = circuit.coords.get(t.q);
+    return c ? [sxOf(c[0]), syOf(c[1])] : null;
+  };
+
+  for (const op of L.ops) {
+    const g = op.g;
+    if (g.kind === 'u') {
+      for (const t of op.targets) {
+        const p = posOf(t);
+        if (!p || !inView(p[0], p[1])) continue;
+        drawBox(p[0], p[1], boxSize, g.pal, g.label);
+      }
+    } else if (g.kind === 'p') {
+      for (let i = 0; i + 1 < op.targets.length; i += 2) {
+        const pa = posOf(op.targets[i]);
+        const pb = posOf(op.targets[i + 1]);
+        if (pa && pb) {
+          if (!inView(pa[0], pa[1]) && !inView(pb[0], pb[1])) continue;
+          ctx.beginPath();
+          ctx.moveTo(pa[0], pa[1]);
+          ctx.lineTo(pb[0], pb[1]);
+          ctx.strokeStyle = '#444';
+          ctx.lineWidth = lineW;
+          ctx.stroke();
+          drawEnd(g.a, pa[0], pa[1], u);
+          drawEnd(g.b, pb[0], pb[1], u);
+        } else if (pa || pb) {
+          // classically-controlled half (rec[]/sweep[] partner): dashed stub
+          const p = pa || pb;
+          const end = pa ? g.a : g.b;
+          if (!inView(p[0], p[1])) continue;
+          ctx.beginPath();
+          ctx.setLineDash([lineW * 2, lineW * 2]);
+          ctx.moveTo(p[0], p[1]);
+          ctx.lineTo(p[0] + u * 0.45, p[1] - u * 0.45);
+          ctx.strokeStyle = '#888';
+          ctx.lineWidth = lineW;
+          ctx.stroke();
+          ctx.setLineDash([]);
+          drawEnd(end, p[0], p[1], u);
+          if (u > 20) {
+            ctx.fillStyle = '#888';
+            ctx.font = `${Math.max(9, u * 0.22)}px -apple-system, sans-serif`;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'bottom';
+            const other = op.targets[i + (pa ? 1 : 0)];
+            ctx.fillText(other.t === 'rec' ? 'rec' : 'swp', p[0] + u * 0.5, p[1] - u * 0.45);
+          }
+        }
+      }
+    } else if (g.kind === 'mpp') {
+      for (const t of op.targets) {
+        const terms = t.t === 'combo' ? t.terms : [t];
+        const pts = [];
+        for (const s2 of terms) {
+          if (s2.t !== 'q') continue;
+          const c = circuit.coords.get(s2.q);
+          if (c) pts.push({ x: sxOf(c[0]), y: syOf(c[1]), pauli: s2.pauli || 'Z' });
+        }
+        if (!pts.length) continue;
+        if (!pts.some(p => inView(p.x, p.y))) continue;
+        if (pts.length > 1) {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.strokeStyle = '#444';
+          ctx.lineWidth = lineW;
+          ctx.stroke();
+        }
+        for (const p of pts) drawBox(p.x, p.y, u * 0.52, p.pauli, 'M' + p.pauli);
+      }
+    }
+  }
+  drawAxes(s, ox, oy);
+}
+
+function niceStep(raw) {
+  const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (m * pow >= raw) return m * pow;
+  return 10 * pow;
+}
+
+function gridStep(s) {
+  return Math.max(1, niceStep((45 * dpr) / s));
+}
+
+function drawGrid(s, ox, oy) {
+  const w = canvas.width, h = canvas.height;
+  const step = gridStep(s);
+  ctx.strokeStyle = '#e7e7e7';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const xMin = -ox / s, xMax = (w - ox) / s;
+  for (let x = Math.ceil(xMin / step) * step; x <= xMax; x += step) {
+    const sx = Math.round(x * s + ox) + 0.5;
+    ctx.moveTo(sx, 0); ctx.lineTo(sx, h);
+  }
+  const yMin = -oy / s, yMax = (h - oy) / s;
+  for (let y = Math.ceil(yMin / step) * step; y <= yMax; y += step) {
+    const sy = Math.round(y * s + oy) + 0.5;
+    ctx.moveTo(0, sy); ctx.lineTo(w, sy);
+  }
+  ctx.stroke();
+}
+
+function drawAxes(s, ox, oy) {
+  const w = canvas.width, h = canvas.height;
+  const bandT = 18 * dpr, bandL = 34 * dpr;
+  ctx.fillStyle = 'rgba(250,250,250,0.88)';
+  ctx.fillRect(0, 0, w, bandT);
+  ctx.fillRect(0, 0, bandL, h);
+  ctx.strokeStyle = '#ddd';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, bandT + 0.5); ctx.lineTo(w, bandT + 0.5);
+  ctx.moveTo(bandL + 0.5, 0); ctx.lineTo(bandL + 0.5, h);
+  ctx.stroke();
+
+  const step = gridStep(s);
+  const fmt = v => {
+    const r = Math.round(v / step) * step;
+    return (+r.toFixed(6)).toString();
+  };
+  ctx.fillStyle = '#888';
+  ctx.font = `${10 * dpr}px -apple-system, sans-serif`;
+  ctx.strokeStyle = '#aaa';
+
+  // x ruler (top), world x -> screen x
+  const xMin = (bandL - ox) / s, xMax = (w - ox) / s;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.beginPath();
+  for (let x = Math.ceil(xMin / step) * step; x <= xMax; x += step) {
+    const sx = x * s + ox;
+    ctx.moveTo(sx, bandT - 4 * dpr); ctx.lineTo(sx, bandT);
+    ctx.fillText(fmt(x), sx, bandT - 6 * dpr);
+  }
+  ctx.stroke();
+
+  // y ruler (left), increases downward
+  const yMin = (bandT - oy) / s, yMax = (h - oy) / s;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.beginPath();
+  for (let y = Math.ceil(yMin / step) * step; y <= yMax; y += step) {
+    const sy = y * s + oy;
+    ctx.moveTo(bandL - 4 * dpr, sy); ctx.lineTo(bandL, sy);
+    ctx.fillText(fmt(y), bandL - 6 * dpr, sy);
+  }
+  ctx.stroke();
+}
+
+function drawStrip() {
+  const c = mStrip.getContext('2d');
+  const w = mStrip.width, h = mStrip.height;
+  c.clearRect(0, 0, w, h);
+  c.fillStyle = '#ececec';
+  c.fillRect(0, 0, w, h);
+  if (!circuit) return;
+  const n = circuit.layers.length;
+  c.fillStyle = '#2b2b2b';
+  const barW = Math.max(1, w / n);
+  for (const t of circuit.mTicks) c.fillRect((t / Math.max(1, n - 1)) * (w - barW), 0, barW, h);
+  c.fillStyle = '#e03131';
+  c.fillRect((tick / Math.max(1, n - 1)) * (w - 2) , 0, Math.max(2, 2 * dpr), h);
+}
+
+/* ============================= Navigation ============================= */
+
+function setTick(t, fromSlider) {
+  if (!circuit) return;
+  tick = Math.max(0, Math.min(circuit.layers.length - 1, t));
+  if (!fromSlider) slider.value = tick;
+  const L = circuit.layers[tick];
+  tickLabel.textContent = `Tick ${tick} / ${circuit.layers.length - 1}`;
+  try { history.replaceState(null, '', '#tick=' + tick); } catch (e) {}
+  document.getElementById('statLayer').textContent =
+    `this tick: ${L ? L.ops.reduce((a, o) => a + (o.g.kind === 'p' ? Math.ceil(o.targets.length / 2) : o.targets.length), 0) : 0} ops`;
+  drawStrip();
+  draw();
+}
+
+function jumpNonEmpty(dir) {
+  if (!circuit) return;
+  const n = circuit.layers.length;
+  let t = tick + dir;
+  while (t >= 0 && t < n && circuit.layers[t].ops.length === 0) t += dir;
+  if (t >= 0 && t < n) setTick(t);
+}
+
+function jumpM(dir) {
+  if (!circuit || !circuit.mTicks.length) return;
+  const arr = circuit.mTicks;
+  if (dir > 0) {
+    for (let i = 0; i < arr.length; i++) if (arr[i] > tick) return setTick(arr[i]);
+    setTick(arr[arr.length - 1]);
+  } else {
+    for (let i = arr.length - 1; i >= 0; i--) if (arr[i] < tick) return setTick(arr[i]);
+    setTick(arr[0]);
+  }
+}
+
+/* ============================= Loading ============================= */
+
+function loadCircuit(text, sourceName) {
+  const statNote = document.getElementById('statNote');
+  try {
+    const t0 = performance.now();
+    circuit = buildCircuit(text);
+    const ms = performance.now() - t0;
+    slider.max = circuit.layers.length - 1;
+    document.getElementById('statCircuit').textContent =
+      `${sourceName || 'circuit'}: ${circuit.qubits.length} qubits · ` +
+      `${circuit.layers.length} ticks · ${circuit.totalOps.toLocaleString()} ops · ` +
+      `${circuit.mTicks.length} measurement ticks · parsed in ${ms.toFixed(0)} ms`;
+    const notes = [];
+    if (circuit.noiseOps) notes.push(`${circuit.noiseOps.toLocaleString()} noise ops hidden`);
+    if (circuit.truncated) notes.push(`TRUNCATED at ${MAX_TICKS.toLocaleString()} ticks / ${MAX_OPS.toLocaleString()} ops`);
+    statNote.textContent = notes.join(' · ');
+    statNote.className = circuit.truncated ? 'err' : 'warn';
+    setTick(0);
+    fitView();
+  } catch (e) {
+    statNote.textContent = `Parse error — ${e.message}`;
+    statNote.className = 'err';
+  }
+}
+
+/* ============================= UI wiring ============================= */
+
+document.getElementById('btnOpen').onclick = () => document.getElementById('fileInput').click();
+document.getElementById('fileInput').onchange = async e => {
+  const f = e.target.files[0];
+  if (f) loadCircuit(await f.text(), f.name);
+  e.target.value = '';
+};
+document.getElementById('btnPaste').onclick = () =>
+  document.getElementById('pastePanel').classList.toggle('open');
+document.getElementById('btnClosePaste').onclick = () =>
+  document.getElementById('pastePanel').classList.remove('open');
+document.getElementById('btnLoadPasted').onclick = () => {
+  loadCircuit(document.getElementById('pasteText').value, 'pasted');
+  document.getElementById('pastePanel').classList.remove('open');
+};
+document.getElementById('btnExample').onclick = () =>
+  loadCircuit(document.getElementById('exampleCircuit').textContent, 'example (surface code d=3, r=3)');
+document.getElementById('btnFit').onclick = fitView;
+document.getElementById('btnHome').onclick = () => setTick(0);
+document.getElementById('btnEnd').onclick = () => setTick(circuit ? circuit.layers.length - 1 : 0);
+document.getElementById('btnPrev').onclick = () => setTick(tick - 1);
+document.getElementById('btnNext').onclick = () => setTick(tick + 1);
+document.getElementById('btnPrevM').onclick = () => jumpM(-1);
+document.getElementById('btnNextM').onclick = () => jumpM(+1);
+slider.oninput = () => setTick(+slider.value, true);
+
+mStrip.onpointerdown = e => {
+  const jump = ev => {
+    const r = mStrip.getBoundingClientRect();
+    if (circuit) setTick(Math.round(((ev.clientX - r.left) / r.width) * (circuit.layers.length - 1)));
+  };
+  jump(e);
+  mStrip.setPointerCapture(e.pointerId);
+  mStrip.onpointermove = jump;
+  mStrip.onpointerup = () => { mStrip.onpointermove = null; };
+};
+
+// pan
+canvas.addEventListener('pointerdown', e => {
+  canvas.setPointerCapture(e.pointerId);
+  canvas.classList.add('panning');
+  let lx = e.clientX, ly = e.clientY;
+  const move = ev => {
+    cam.x -= (ev.clientX - lx) / cam.scale;
+    cam.y -= (ev.clientY - ly) / cam.scale;
+    lx = ev.clientX; ly = ev.clientY;
+    draw();
+  };
+  const up = () => {
+    canvas.removeEventListener('pointermove', move);
+    canvas.removeEventListener('pointerup', up);
+    canvas.classList.remove('panning');
+  };
+  canvas.addEventListener('pointermove', move);
+  canvas.addEventListener('pointerup', up);
+});
+
+// zoom toward cursor
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  if (!circuit) return;
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left - r.width / 2;
+  const my = e.clientY - r.top - r.height / 2;
+  const f = Math.exp(-e.deltaY * 0.0016);
+  const ns = Math.max(0.4 / circuit.unit, Math.min(2000 / circuit.unit, cam.scale * f));
+  const applied = ns / cam.scale;
+  cam.x += (mx / cam.scale) * (1 - 1 / applied);
+  cam.y += (my / cam.scale) * (1 - 1 / applied);
+  cam.scale = ns;
+  draw();
+}, { passive: false });
+
+canvas.addEventListener('dblclick', fitView);
+
+// keyboard
+let spaceHeld = false;
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  if (e.key === ' ') { spaceHeld = true; e.preventDefault(); return; }
+  switch (e.key) {
+    case 'ArrowRight': jumpM(+1); e.preventDefault(); break;
+    case 'ArrowLeft':  jumpM(-1); e.preventDefault(); break;
+    case '.': case 'e': case 'E': if (spaceHeld) jumpNonEmpty(+1); else setTick(tick + 1); e.preventDefault(); break;
+    case ',': case 'q': case 'Q': if (spaceHeld) jumpNonEmpty(-1); else setTick(tick - 1); e.preventDefault(); break;
+    case 'Home': setTick(0); e.preventDefault(); break;
+    case 'End': setTick(circuit ? circuit.layers.length - 1 : 0); e.preventDefault(); break;
+    case 'f': case 'F': fitView(); break;
+  }
+});
+window.addEventListener('keyup', e => {
+  if (e.key === ' ') spaceHeld = false;
+});
+
+// paste anywhere
+window.addEventListener('paste', e => {
+  if (e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT') return;
+  const text = e.clipboardData.getData('text');
+  if (text && text.trim()) loadCircuit(text, 'pasted');
+});
+
+// drag & drop
+const dropOverlay = document.getElementById('dropOverlay');
+window.addEventListener('dragover', e => { e.preventDefault(); dropOverlay.classList.add('show'); });
+window.addEventListener('dragleave', e => { if (!e.relatedTarget) dropOverlay.classList.remove('show'); });
+window.addEventListener('drop', async e => {
+  e.preventDefault();
+  dropOverlay.classList.remove('show');
+  const f = e.dataTransfer.files[0];
+  if (f) loadCircuit(await f.text(), f.name);
+});
+
+window.addEventListener('resize', resize);
+
+/* ============================= Init ============================= */
+
+resize();
+{
+  const m = location.hash.match(/tick=(\d+)/);
+  loadCircuit(document.getElementById('exampleCircuit').textContent, 'example (surface code d=3, r=3)');
+  if (m) setTick(+m[1]);
+}
+</script>
+</body>
+</html>
