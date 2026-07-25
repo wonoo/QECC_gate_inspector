@@ -1,19 +1,19 @@
-# QECC_gate_inspector
+# QECC Gate Inspector
 
-Inspired by crumble (https://algassert.com/crumble). 
+A lightweight gate-sequence viewer for quantum error correction circuits.
 
-Built this because crumble became too slow for large circuits, and I wanted to inspect only the gate sequences of the QEC circuit.
+Inspired by [Crumble](https://algassert.com/crumble), but stripped down for speed — Crumble becomes sluggish on large circuits, and often all you need is to step through the gate sequence itself. This tool drops the heavy parts (Pauli marks, quantum circuit timeline rendering) to keep navigation fast even at scale.
 
-Therefore, I removed all the heavy operations of crumble such as Pauli marks and drawing quantum circuit timelines.
+## Keyboard Shortcuts
 
-### Keyboard short cuts
+| Key | Action |
+|---|---|
+| `E` | Next tick |
+| `Q` | Previous tick |
+| `Space` + `E` | Next tick with a gate (skip empty ticks) |
+| `Space` + `Q` | Previous tick with a gate (skip empty ticks) |
+| `→` | Next tick containing a measurement |
+| `←` | Previous tick containing a measurement |
 
-e: next tick
-q: previous tick
-space + e: next tick with a gate (skip all the empty ticks)
-space + q: previous tick with a gate (skip all the empty ticks)
-right arrow (->): next tick that contains a measurement
-left arrow (<-): previous tick that contains a measurement
-
-### Snapshots
+## Snapshots
 
