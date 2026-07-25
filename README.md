@@ -12,3 +12,8 @@ e: next tick
 q: previous tick
 space + e: next tick with a gate (skip all the empty ticks)
 space + q: previous tick with a gate (skip all the empty ticks)
+right arrow (->): next tick that contains a measurement
+left arrow (<-): previous tick that contains a measurement
+
+### Snapshots
+
